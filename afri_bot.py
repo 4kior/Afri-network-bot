@@ -546,31 +546,12 @@ async def setup_ticket_panel(interaction: discord.Interaction) -> None:
     )
 
 
-# ==================== Button Handlers ====================
-
-@client.event
-async def on_interaction(interaction: discord.Interaction):
-    """Handle button and select interactions."""
-    if not isinstance(interaction, discord.ComponentInteraction):
-        return
-    
-    custom_id = interaction.data.get("custom_id", "")
-    
-    if custom_id == "afri_ticket_category":
-        # Dropdown select for ticket category - handled by TicketPanelView callback
-        pass
-    elif custom_id == "afri_ticket_close":
-        if not can_close(interaction.user, interaction.channel):
-            await interaction.response.send_message(
-                "🚫 You cannot close this ticket.", ephemeral=True
-            )
-            return
-        await prompt_close(interaction)
-    elif custom_id == "afri_ticket_cancel":
-        await interaction.response.edit_message(content="❌ Close cancelled.", view=None)
-    elif custom_id == "afri_ticket_reason":
-        # Close reason select - handled by TicketCloseConfirmView callback
-        pass
+# ==================== Interaction Handlers ====================
+# Button and select interactions are handled by their respective View callbacks:
+# - TicketPanelView.on_category_select handles the ticket category dropdown
+# - TicketCloseView.close_ticket_button handles the close ticket button
+# - TicketCloseConfirmView.reason_select handles the close reason dropdown
+# - TicketCloseConfirmView.cancel_button handles the cancel button
 
 
 # ==================== Bot Ready ====================
