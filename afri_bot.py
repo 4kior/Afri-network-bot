@@ -31,6 +31,43 @@ STAFF_ROLE_ID = 1566410488374493395  # Staff
 OWNER_ROLE_ID = 1566409705222574122  # Owner
 MANAGER_ROLE_ID = 1566410433609343147  # Manager
 ADMIN_PLUS_ROLE_ID = 1566410435207634954  # Admin [+]
+ADMIN_MINUS_ROLE_ID = 1566410442262183986  # Admin [-]
+MOD_PLUS_ROLE_ID = 1566410449929379851  # Moderator [+]
+MOD_MINUS_ROLE_ID = 1566410455834951743  # Moderator [-]
+
+# Ticket categories with their associated roles
+TICKET_CATEGORIES = {
+    "vpn_support": {
+        "name": "VPN Support",
+        "emoji": "🌐",
+        "description": "Click on this option to create a ticket",
+        "roles": [ADMIN_PLUS_ROLE_ID, MANAGER_ROLE_ID, OWNER_ROLE_ID],
+    },
+    "support": {
+        "name": "Support",
+        "emoji": "🔖",
+        "description": "Click on this option to create a ticket",
+        "roles": [STAFF_ROLE_ID],
+    },
+    "punishment_appeal": {
+        "name": "Punishment Appeal",
+        "emoji": "🏳️",
+        "description": "Click on this option to create a ticket",
+        "roles": [MOD_PLUS_ROLE_ID, ADMIN_MINUS_ROLE_ID, ADMIN_PLUS_ROLE_ID, MANAGER_ROLE_ID, OWNER_ROLE_ID],
+    },
+    "report_player": {
+        "name": "Report Player",
+        "emoji": "❗",
+        "description": "Click on this option to create a ticket",
+        "roles": [STAFF_ROLE_ID],
+    },
+    "report_staff": {
+        "name": "Report a Staff",
+        "emoji": "🔧",
+        "description": "Report a Staff Member",
+        "roles": [ADMIN_PLUS_ROLE_ID, MANAGER_ROLE_ID, OWNER_ROLE_ID],
+    },
+}
 
 # Ticket storage
 TICKETS_FILE = "afri_tickets.json"
@@ -138,19 +175,34 @@ def can_close(member: discord.Member, channel) -> bool:
 # ==================== Ticket Panel View ====================
 
 class TicketPanelView(discord.ui.View):
-    """View for the ticket panel with a single support button."""
+    """View for the ticket panel with a category dropdown."""
     
     def __init__(self):
         super().__init__(timeout=None)
+        
+        # Build select options from TICKET_CATEGORIES
+        options = []
+        for key, cat in TICKET_CATEGORIES.items():
+            options.append(
+                discord.SelectOption(
+                    label=cat["name"],
+                    value=key,
+                    description=cat["description"],
+                    emoji=cat["emoji"],
+                )
+            )
+        
+        self.select = discord.ui.Select(
+            placeholder="Select a category",
+            custom_id="afri_ticket_category",
+            options=options,
+        )
+        self.select.callback = self.on_category_select
+        self.add_item(self.select)
     
-    @discord.ui.button(
-        label="Support",
-        emoji="🎫",
-        style=discord.ButtonStyle.primary,
-        custom_id="afri_ticket_open"
-    )
-    async def open_ticket_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await open_ticket(interaction)
+    async def on_category_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        category_key = select.values[0]
+        await open_ticket(interaction, category_key)
 
 
 class TicketCloseView(discord.ui.View):
@@ -205,10 +257,16 @@ class TicketCloseConfirmView(discord.ui.View):
 
 # ==================== Ticket Functions ====================
 
-async def open_ticket(interaction: discord.Interaction) -> None:
-    """Create a new support ticket for the user."""
+async def open_ticket(interaction: discord.Interaction, category_key: str) -> None:
+    """Create a new ticket for the user with the selected category."""
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
+    
+    # Get category info
+    cat_info = TICKET_CATEGORIES.get(category_key)
+    if cat_info is None:
+        await interaction.followup.send("❌ Invalid ticket category.", ephemeral=True)
+        return
     
     if not guild.me.guild_permissions.manage_channels:
         await interaction.followup.send(
@@ -227,6 +285,13 @@ async def open_ticket(interaction: discord.Interaction) -> None:
         )
         return
     
+    # Get the roles for this category
+    category_roles = []
+    for role_id in cat_info["roles"]:
+        role = guild.get_role(role_id)
+        if role:
+            category_roles.append(role)
+    
     # Create permission overwrites
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -234,16 +299,9 @@ async def open_ticket(interaction: discord.Interaction) -> None:
         guild.me: discord.PermissionOverwrite(**STAFF_PERMISSIONS),
     }
     
-    # Add staff role permissions
-    staff_role = guild.get_role(STAFF_ROLE_ID)
-    if staff_role:
-        overwrites[staff_role] = discord.PermissionOverwrite(**STAFF_PERMISSIONS)
-    
-    # Add admin roles
-    for role_id in [OWNER_ROLE_ID, MANAGER_ROLE_ID, ADMIN_PLUS_ROLE_ID]:
-        role = guild.get_role(role_id)
-        if role:
-            overwrites[role] = discord.PermissionOverwrite(**STAFF_PERMISSIONS)
+    # Add category-specific role permissions
+    for role in category_roles:
+        overwrites[role] = discord.PermissionOverwrite(**STAFF_PERMISSIONS)
     
     # Get category
     category = guild.get_channel(TICKET_CATEGORY_ID)
@@ -253,10 +311,14 @@ async def open_ticket(interaction: discord.Interaction) -> None:
         ch for ch in interaction.user.name.lower() if ch.isalnum() or ch in "-_"
     ).strip("-_") or str(interaction.user.id)
     
+    # Create ticket channel name with category prefix
+    cat_prefix = category_key.replace("_", "-")
+    channel_name = f"{cat_prefix}-{safe_name}"[:95]
+    
     # Create ticket channel
     try:
         channel = await guild.create_text_channel(
-            f"ticket-{safe_name}"[:100],
+            channel_name,
             category=category,
             topic=owner_topic,
             overwrites=overwrites,
@@ -269,12 +331,16 @@ async def open_ticket(interaction: discord.Interaction) -> None:
         )
         return
     
+    # Build role mentions
+    role_mentions = " ".join(role.mention for role in category_roles)
+    
     # Send header message
     embed = discord.Embed(
-        title="🎫 Support Ticket",
+        title=f"{cat_info['emoji']} {cat_info['name']}",
         color=0x5865F2,
         description=(
             f"Hello {interaction.user.mention}!\n\n"
+            f"**Category:** {cat_info['name']}\n\n"
             "Please describe your issue or question below:\n"
             "• **What** problem are you experiencing?\n"
             "• **When** did it start?\n"
@@ -286,16 +352,15 @@ async def open_ticket(interaction: discord.Interaction) -> None:
     )
     embed.set_footer(text=f"Ticket owner: {interaction.user}", icon_url=interaction.user.display_avatar.url)
     
-    # Get staff role for mention
-    staff_role = guild.get_role(STAFF_ROLE_ID)
-    staff_mention = staff_role.mention if staff_role else "@staff"
+    # Build allowed mentions list
+    mention_role_ids = [role.id for role in category_roles]
     
     try:
         await channel.send(
-            content=f"{interaction.user.mention} {staff_mention}",
+            content=f"{interaction.user.mention}{role_mentions if role_mentions else ''}",
             embed=embed,
             view=TicketCloseView(),
-            allowed_mentions=discord.AllowedMentions(users=[interaction.user], roles=[staff_role.id] if staff_role else []),
+            allowed_mentions=discord.AllowedMentions(users=[interaction.user], roles=mention_role_ids),
         )
     except discord.HTTPException as e:
         print(f"Failed to send header: {e}")
@@ -308,14 +373,15 @@ async def open_ticket(interaction: discord.Interaction) -> None:
         )
         return
     
-    # Notify staff
+    # Notify staff in pings channel
     pings_channel = guild.get_channel(TICKET_PINGS_CHANNEL_ID)
     if pings_channel and isinstance(pings_channel, discord.TextChannel):
         notify_embed = discord.Embed(
-            title="🔔 New Support Ticket",
+            title=f"🔔 New {cat_info['name']} Ticket",
             color=0xFEE75C,
             description=(
                 f"**User:** {interaction.user} (<@{interaction.user.id}>)\n"
+                f"**Category:** {cat_info['name']}\n"
                 f"**Ticket:** {channel.mention}\n\n"
                 "Please check and respond promptly."
             ),
@@ -331,10 +397,11 @@ async def open_ticket(interaction: discord.Interaction) -> None:
         "owner_id": interaction.user.id,
         "created_at": time.time(),
         "status": "open",
+        "category": category_key,
     })
     
     await interaction.followup.send(
-        f"✅ Your support ticket is ready: {channel.mention}", ephemeral=True
+        f"✅ Your ticket is ready: {channel.mention}", ephemeral=True
     )
 
 
@@ -448,6 +515,7 @@ async def build_transcript(channel, closed_by: str, reason: str) -> str:
 @app_commands.checks.has_permissions(manage_guild=True)
 async def setup_ticket_panel(interaction: discord.Interaction) -> None:
     """Set up the ticket panel message."""
+    guild = interaction.guild
     channel = client.get_channel(TICKET_PANEL_CHANNEL_ID)
     if channel is None:
         try:
@@ -463,15 +531,14 @@ async def setup_ticket_panel(interaction: discord.Interaction) -> None:
         return
     
     embed = discord.Embed(
-        title="🎫 Need Help?",
+        title="Create a ticket",
         color=0x5865F2,
         description=(
-            "Welcome to **Afri-Network Support**!\n\n"
-            "Click the button below to open a support ticket.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "💬 A private ticket will be created for you."
+            "Please click on the button below to create a support ticket."
         ),
     )
+    if guild.icon:
+        embed.set_author(name="Afri-Network Support", icon_url=guild.icon.url)
     
     await channel.send(embed=embed, view=TicketPanelView())
     await interaction.response.send_message(
@@ -483,14 +550,15 @@ async def setup_ticket_panel(interaction: discord.Interaction) -> None:
 
 @client.event
 async def on_interaction(interaction: discord.Interaction):
-    """Handle button interactions."""
+    """Handle button and select interactions."""
     if not isinstance(interaction, discord.ComponentInteraction):
         return
     
     custom_id = interaction.data.get("custom_id", "")
     
-    if custom_id == "afri_ticket_open":
-        await open_ticket(interaction)
+    if custom_id == "afri_ticket_category":
+        # Dropdown select for ticket category - handled by TicketPanelView callback
+        pass
     elif custom_id == "afri_ticket_close":
         if not can_close(interaction.user, interaction.channel):
             await interaction.response.send_message(
@@ -500,6 +568,9 @@ async def on_interaction(interaction: discord.Interaction):
         await prompt_close(interaction)
     elif custom_id == "afri_ticket_cancel":
         await interaction.response.edit_message(content="❌ Close cancelled.", view=None)
+    elif custom_id == "afri_ticket_reason":
+        # Close reason select - handled by TicketCloseConfirmView callback
+        pass
 
 
 # ==================== Bot Ready ====================
